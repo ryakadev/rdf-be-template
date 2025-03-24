@@ -1,0 +1,97 @@
+services:
+  kong-db:
+    image: postgres:9.6-alpine
+    container_name: kong-db
+    environment:
+      POSTGRES_DB: kong
+      POSTGRES_USER: kong
+      POSTGRES_PASSWORD: kong
+    volumes:
+      - ./api-db-pg:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "kong"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: on-failure
+    networks:
+      - api-gateway-network
+
+  kong-migrations:
+    image: kong/kong-gateway:3.2.1.0
+    command: kong migrations bootstrap
+    container_name: kong-migrations
+    platform: linux/amd64
+    depends_on:
+      kong-db:
+        condition: service_healthy
+    environment:
+      KONG_DATABASE: postgres
+      KONG_PG_HOST: kong-db
+      KONG_PG_DATABASE: kong
+      KONG_PG_USER: kong
+      KONG_PG_PASSWORD: kong
+    restart: on-failure
+    networks:
+      - api-gateway-network
+
+  kong:
+    image: kong/kong-gateway:3.2.1.0
+    container_name: kong
+    platform: linux/amd64
+    restart: on-failure
+    depends_on:
+      kong-db:
+        condition: service_healthy
+    environment:
+      KONG_DATABASE: postgres
+      KONG_PG_HOST: kong-db
+      KONG_PG_DATABASE: kong
+      KONG_PG_USER: kong
+      KONG_PG_PASSWORD: kong
+      KONG_PROXY_LISTEN: 0.0.0.0:8000, 0.0.0.0:8443 ssl
+      KONG_ADMIN_LISTEN: 0.0.0.0:8001, 0.0.0.0:8444 ssl
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://kong-ce:8001"]
+      interval: 5s
+      timeout: 2s
+      retries: 10
+    ports:
+      - "8000-8001:8000-8001/tcp"
+      - "8443:8443"
+      - "8444:8444"
+    networks:
+      - api-gateway-network
+
+  konga:
+    image: pantsel/konga
+    container_name: konga
+    platform: linux/amd64
+    environment:
+      DB_ADAPTER: postgres
+      DB_HOST: kong-db
+      DB_PORT: 5432
+      DB_USER: kong
+      DB_PASSWORD: kong
+      DB_DATABASE: kong
+      DB_PG_SCHEMA: public
+      KONGA_API_URL: http://kong:8001
+    volumes:
+      - ./api-kong:/app/kongadata
+    ports:
+      - "1337:1337"
+    depends_on:
+      - kong-db
+      - kong-migrations
+      - kong
+    networks:
+      - api-gateway-network
+  #user: admin
+  #email: admin@mail.com
+  #password: 1234567890
+
+networks:
+  api-gateway-network:
+    external: true
