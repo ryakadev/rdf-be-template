@@ -1,7 +1,74 @@
+version: "3.3"
 services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: postgres-rd
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: 1234567890
+      POSTGRES_DB: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./postgres-data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:latest
+    container_name: rd-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./redis-data:/data
+  redpanda:
+    image: redpandadata/redpanda
+    container_name: rd-redpanda
+    ports:
+      - "29092:29092" # Kafka external access
+      - "8081:8081" # Schema Registry
+      - "28082:28082" # Pandaproxy external access
+    command:
+      - redpanda start
+      - --overprovisioned
+      - --smp 1
+      - --memory 1G
+      - --reserve-memory 0M
+      - --node-id 0
+      - --check=false
+      - --pandaproxy-addr INSIDE://0.0.0.0:8082,OUTSIDE://0.0.0.0:28082
+      - --advertise-pandaproxy-addr INSIDE://redpanda:8082,OUTSIDE://localhost:28082
+      - --kafka-addr INSIDE://0.0.0.0:9092,OUTSIDE://0.0.0.0:29092
+      - --advertise-kafka-addr INSIDE://redpanda:9092,OUTSIDE://localhost:29092
+      - --rpc-addr 0.0.0.0:33145
+      - --advertise-rpc-addr redpanda:33145
+      - --set redpanda.enable_transactions=true
+      - --set redpanda.enable_idempotence=true
+      - --set redpanda.auto_create_topics_enabled=true
+  console:
+    image: redpandadata/console
+    restart: on-failure
+    entrypoint: /bin/sh
+    command: -c "echo \"$$CONSOLE_CONFIG_FILE\" > /tmp/config.yml; /app/console"
+    container_name: rd-console
+    environment:
+      CONFIG_FILEPATH: /tmp/config.yml
+      CONSOLE_CONFIG_FILE: |
+        kafka:
+          brokers: ["redpanda:9092"]
+          schemaRegistry:
+            enabled: true
+            urls: ["http://redpanda:8081"]
+        connect:
+          enabled: true
+          clusters:
+            - name: datagen
+              url: http://connect:8083
+    ports:
+      - "8089:8080"
+    depends_on:
+      - redpanda
   kong-db:
     image: postgres:9.6-alpine
-    container_name: kong-db
+    container_name: rd-kong-db
     environment:
       POSTGRES_DB: kong
       POSTGRES_USER: kong
@@ -9,20 +76,18 @@ services:
     volumes:
       - ./api-db-pg:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
+      - "5433:5432"
     healthcheck:
       test: ["CMD", "pg_isready", "-U", "kong"]
       interval: 10s
       timeout: 5s
       retries: 5
     restart: on-failure
-    networks:
-      - api-gateway-network
 
   kong-migrations:
     image: kong/kong-gateway:3.2.1.0
     command: kong migrations bootstrap
-    container_name: kong-migrations
+    container_name: rd-kong-migrations
     platform: linux/amd64
     depends_on:
       kong-db:
@@ -34,12 +99,10 @@ services:
       KONG_PG_USER: kong
       KONG_PG_PASSWORD: kong
     restart: on-failure
-    networks:
-      - api-gateway-network
 
   kong:
     image: kong/kong-gateway:3.2.1.0
-    container_name: kong
+    container_name: rd-kong
     platform: linux/amd64
     restart: on-failure
     depends_on:
@@ -54,7 +117,7 @@ services:
       KONG_PROXY_LISTEN: 0.0.0.0:8000, 0.0.0.0:8443 ssl
       KONG_ADMIN_LISTEN: 0.0.0.0:8001, 0.0.0.0:8444 ssl
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://kong-ce:8001"]
+      test: ["CMD", "curl", "-f", "http://kong:8001"]
       interval: 5s
       timeout: 2s
       retries: 10
@@ -62,12 +125,10 @@ services:
       - "8000-8001:8000-8001/tcp"
       - "8443:8443"
       - "8444:8444"
-    networks:
-      - api-gateway-network
 
   konga:
     image: pantsel/konga
-    container_name: konga
+    container_name: rd-konga
     platform: linux/amd64
     environment:
       DB_ADAPTER: postgres
@@ -86,12 +147,3 @@ services:
       - kong-db
       - kong-migrations
       - kong
-    networks:
-      - api-gateway-network
-  #user: admin
-  #email: admin@mail.com
-  #password: 1234567890
-
-networks:
-  api-gateway-network:
-    external: true
